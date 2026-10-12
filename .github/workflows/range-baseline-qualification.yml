@@ -1,0 +1,90 @@
+name: Qualify filtered around-event baseline
+on:
+  push:
+    branches: [qualification/range-baseline]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-baseline:
+    if: github.repository == 'rudycelekli/agent-beacon' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.4'
+          cache: false
+      - name: Confirm exact upstream production baseline
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "f9b522cfc7b419436c2bf7eb1b7e09bb985974ea"
+          git diff --name-only HEAD^ HEAD | sort > changed-files.txt
+          printf '%s\n' '.github/workflows/range-baseline-qualification.yml' 'cli/beacon/internal/endpoint/dashboard/trace_around_filtered_test.go' | sort > expected-files.txt
+          diff -u expected-files.txt changed-files.txt
+          test "$(go env GOOS)" = linux
+          test "$(go env GOARCH)" = amd64
+          test "$(go version)" = 'go version go1.26.4 linux/amd64'
+          mkdir proof
+          git rev-parse HEAD HEAD^ > proof/revisions.txt
+          go version > proof/environment.txt
+          uname -a >> proof/environment.txt
+      - name: Build real native embedded hooks
+        working-directory: cli/beacon
+        run: make build-hooks-current
+      - name: Run complete actual dashboard baseline
+        run: |
+          set +e
+          cd cli/beacon
+          go test -json -count=1 -parallel=2 ./internal/endpoint/dashboard > ../../proof/baseline-dashboard.jsonl 2>&1
+          code=$?
+          printf '%s\n' "$code" > ../../proof/baseline-exit.txt
+          exit 0
+      - name: Require intended native regression and unchanged passing controls
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path("proof/baseline-dashboard.jsonl").read_text().splitlines() if x.startswith("{")]
+          outcome={x["Test"]:x["Action"] for x in rows if x.get("Test") and x["Action"] in ("pass","fail","skip")}
+          assert not any(x.get("Action") in ("build-fail", "build-output") for x in rows), "build errors"
+          terminals=[x for x in rows if not x.get("Test") and x.get("Action") in ("pass","fail","skip")]
+          assert len(terminals)==1 and terminals[0]["Action"]=="fail", terminals
+          runs={x["Test"] for x in rows if x.get("Test") and x["Action"]=="run"}
+          assert runs==set(outcome), "missing test terminal events"
+          assert not any(v=="skip" for t,v in outcome.items() if t.startswith("TestShowTraceAroundOriginalNumberWithTypeFilter"))
+          expected_cases={
+              "defaults":"pass", "nonpositive_context":"pass", "anchor":"fail",
+              "filtered_anchor":"fail", "first":"fail", "last":"fail",
+              "before_first":"fail", "after_last":"fail", "empty_filter":"pass",
+              "filtered_pagination":"pass", "filtered_past_end":"pass",
+              "unfiltered":"pass", "unfiltered_boundary":"pass",
+          }
+          prefix="TestShowTraceAroundOriginalNumberWithTypeFilter"
+          expected_new={prefix:"fail"}
+          for mode in ("jsonl","history"):
+              expected_new[prefix+"/"+mode]="fail"
+              expected_new.update({prefix+"/"+mode+"/"+case:status for case,status in expected_cases.items()})
+          actual_new={t:v for t,v in outcome.items() if t.startswith(prefix)}
+          assert actual_new==expected_new, (actual_new,expected_new)
+          failures={t for t,v in outcome.items() if v=="fail"}
+          assert failures=={t for t,v in expected_new.items() if v=="fail"}, failures
+          assert Path("proof/baseline-exit.txt").read_text().strip()=="1"
+          Path("proof/outcomes.json").write_text(json.dumps(outcome,indent=2)+"\n")
+          Path("proof/expected-new-outcomes.json").write_text(json.dumps(expected_new,indent=2)+"\n")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: filtered-around-event-baseline
+          path: proof/
+          retention-days: 1
+          compression-level: 9
