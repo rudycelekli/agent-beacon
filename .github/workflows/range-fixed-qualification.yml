@@ -1,0 +1,67 @@
+name: Qualify filtered around-event fix
+on:
+  push:
+    branches: [qualification/range-fixed]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native-fixed:
+    if: github.repository == 'rudycelekli/agent-beacon' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOTOOLCHAIN: local
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rudycelekli/agent-beacon
+          ref: c33ceaa4c3811ed92d8818c655ba216c8aa89ce3
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.4'
+          cache: false
+      - name: Verify immutable independent candidate and literal baseline
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = c33ceaa4c3811ed92d8818c655ba216c8aa89ce3
+          test "$(git -C candidate rev-parse HEAD^)" = f9b522cfc7b419436c2bf7eb1b7e09bb985974ea
+          test "$(go version)" = 'go version go1.26.4 linux/amd64'
+          test "$(go env GOOS)" = linux
+          test "$(go env GOARCH)" = amd64
+          echo '3cf8d3884a3d337a84e3d7d55773351319a50d1966578ba5f935487c53a9317d  .github/qualification/range-baseline-outcomes.json' | sha256sum -c -
+          mkdir proof
+          git rev-parse HEAD > proof/harness-head.txt
+          git -C candidate rev-parse HEAD HEAD^ > proof/candidate-revisions.txt
+          git -C candidate diff HEAD^ HEAD --name-only > proof/candidate-files.txt
+          go version > proof/environment.txt
+          uname -a >> proof/environment.txt
+      - name: Build real shipping CLI and native hooks
+        run: make -C candidate/cli/beacon build > proof/build.log 2>&1
+      - name: Complete actual dashboard package
+        run: |
+          cd candidate/cli/beacon
+          go test -json -count=1 -parallel=2 ./internal/endpoint/dashboard > ../../../proof/fixed-dashboard.jsonl 2>&1
+      - name: Native race tests for both real trace read paths
+        run: |
+          cd candidate/cli/beacon
+          go test -race -json -count=1 -parallel=2 ./internal/endpoint/dashboard -run '^TestShowTraceAroundOriginalNumberWithTypeFilter$' > ../../../proof/fixed-race.jsonl 2>&1
+      - name: Compare every original outcome and verify actual shipping CLI
+        run: python3 .github/qualification/verify-range-fixed.py
+      - name: Confirm tracked candidate source remains unchanged
+        run: git -C candidate diff --exit-code
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: filtered-around-event-fixed
+          path: proof/
+          retention-days: 1
+          compression-level: 9
