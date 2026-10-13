@@ -1,0 +1,78 @@
+name: Terminal cells immutable native qualification
+on:
+  push:
+    branches: [qualification/terminal-cells-native-20261013]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    if: github.repository == 'rudycelekli/agent-beacon' && github.event.repository.fork == true && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - phase: baseline
+            head: f9b522cfc7b419436c2bf7eb1b7e09bb985974ea
+          - phase: fixed
+            head: ce6e7b1c822fccbb7754149c0bb03402545c10ec
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: harness
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ matrix.head }}
+          path: source
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.4'
+          cache: false
+      - name: Native five-module qualification
+        env:
+          GOMAXPROCS: '2'
+          GOFLAGS: '-p=2 -mod=readonly'
+          GOTOOLCHAIN: local
+        run: python3 harness/.qualification/terminal-cells/native.py '${{ matrix.phase }}' source 'proof/${{ matrix.phase }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: terminal-cells-${{ matrix.phase }}
+          path: proof/${{ matrix.phase }}/
+          retention-days: 1
+          compression-level: 9
+          if-no-files-found: error
+  compare:
+    needs: native
+    if: always() && github.repository == 'rudycelekli/agent-beacon' && github.event.repository.fork == true && github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Download actual native receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download '${{ github.run_id }}' --repo '${{ github.repository }}' --dir artifacts
+      - name: Evaluator interventions
+        run: python3 -m unittest discover -s .qualification/terminal-cells -p test_evaluate.py -v > evaluator-controls.log 2>&1
+      - name: Compare original and fixed native outcomes
+        run: python3 .qualification/terminal-cells/compare_native.py artifacts/terminal-cells-baseline artifacts/terminal-cells-fixed comparison.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: terminal-cells-comparison
+          path: |
+            comparison.json
+            evaluator-controls.log
+          retention-days: 1
+          compression-level: 9
+          if-no-files-found: error

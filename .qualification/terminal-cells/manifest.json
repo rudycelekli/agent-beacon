@@ -1,0 +1,80 @@
+{
+  "goVersion": "go1.26.4",
+  "phases": {
+    "baseline": {
+      "head": "f9b522cfc7b419436c2bf7eb1b7e09bb985974ea",
+      "tree": "fcc08493c0ea07adfc21231f94695fa26196622a"
+    },
+    "fixed": {
+      "head": "ce6e7b1c822fccbb7754149c0bb03402545c10ec",
+      "tree": "ec719a76a6910dfed5f00121971227302ae1b832"
+    }
+  },
+  "fixedSourceHashes": {
+    "cli/beacon/go.mod": "c4bd8d2e730e4fe6dce9da9213e4c5202de08b8ee827e72d0f58faaa8d18181e",
+    "cli/beacon/internal/endpoint/traceview/terminal_cells_test.go": "ffee13535434fc6efe34dc1bab65205087db1582b408162d76e50cdeb4ef6028",
+    "cli/beacon/internal/endpoint/traceview/traceview.go": "e3c4049b5377a5465de80524867224c62af537d6814c75c40405a0cb51cbe9c0",
+    "docs/cli/endpoint-traces.mdx": "add023bfc1bbaeeba957962f37e7f186f655b2ace4d726adece01849df1ab6e2"
+  },
+  "fixturePath": "cli/beacon/internal/endpoint/traceview/terminal_cells_test.go",
+  "fixtureSHA256": "ffee13535434fc6efe34dc1bab65205087db1582b408162d76e50cdeb4ef6028",
+  "fixtureProvenance": {
+    "time": "2026-10-13T10:58:08.770529+00:00",
+    "oldHeadPreserved": "e44b6d9af14bdb075f44ee069e8b52f38ac1d66b",
+    "oldTestSHA256": "6d2548fca7c2d8375ae6bccef6964c414d750bd900dfacff193ecb870bbb68e3",
+    "strongerTestSHA256": "ffee13535434fc6efe34dc1bab65205087db1582b408162d76e50cdeb4ef6028",
+    "reason": "independent review found50-column Model testcase baselinepositive;80-column actualModelcase and nonvacuous CJK presence assert before native qualification",
+    "nativeStatus": "PENDING"
+  },
+  "lanes": {
+    "cli": {
+      "module": "cli/beacon",
+      "scope": "./...",
+      "race": false,
+      "affected": true
+    },
+    "endpoint-race": {
+      "module": "cli/beacon",
+      "scope": "./internal/endpoint/...",
+      "race": true,
+      "affected": true
+    },
+    "hooks": {
+      "module": "cli/beacon-hooks",
+      "scope": "./...",
+      "race": false,
+      "affected": false
+    },
+    "exporter": {
+      "module": "collector-builder/exporter/beaconjsonexporter",
+      "scope": "./...",
+      "race": false,
+      "affected": false
+    },
+    "observe": {
+      "module": "pkg/asymptoteobserve",
+      "scope": "./...",
+      "race": false,
+      "affected": false
+    },
+    "sandbox": {
+      "module": "beacon-sandbox",
+      "scope": "./...",
+      "race": false,
+      "affected": false
+    }
+  },
+  "modules": [
+    "beacon-sandbox",
+    "cli/beacon",
+    "cli/beacon-hooks",
+    "collector-builder/exporter/beaconjsonexporter",
+    "pkg/asymptoteobserve"
+  ],
+  "expectedNewCountsHypothesis": {
+    "identities": 16,
+    "baselineFailures": 11,
+    "baselinePassControls": 5,
+    "actualBaselineNative": "NOT_RUN; qualifierrejectsmismatch"
+  }
+}
