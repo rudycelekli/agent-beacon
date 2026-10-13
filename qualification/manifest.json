@@ -1,0 +1,20 @@
+{
+  "repository": "rudycelekli/agent-beacon",
+  "go_version": "go1.26.4",
+  "phases": {
+    "baseline": {
+      "head": "f9b522cfc7b419436c2bf7eb1b7e09bb985974ea",
+      "tree": "fcc08493c0ea07adfc21231f94695fa26196622a"
+    },
+    "fixed": {
+      "head": "692dbbae4fc74bf4a2837a895f4ce5adee9f5b2c",
+      "tree": "aa1503efd65b233fa0f757026797e849d4ea6de1"
+    }
+  },
+  "fixture_path": "cli/beacon/internal/endpoint/traceview/search_quit_test.go",
+  "fixture_sha256": "56451e0b3ae1d378cb873736b310d94832452d583f91dda3459fa6ec05dab05f",
+  "expected_regressions": [
+    "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/traceview::TestSearchControlCQuitsTraceBrowser",
+    "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/traceview::TestSearchControlCExitsNativeProgram"
+  ]
+}

@@ -1,0 +1,82 @@
+name: Trace-search immutable native qualification
+on:
+  push:
+    branches: [qualification/trace-search-native-20261013]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native:
+    if: github.repository == 'rudycelekli/agent-beacon' && !github.event.repository.private
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - phase: baseline
+            head: f9b522cfc7b419436c2bf7eb1b7e09bb985974ea
+          - phase: fixed
+            head: 692dbbae4fc74bf4a2837a895f4ce5adee9f5b2c
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: harness
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Preserve exact source bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ matrix.head }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.4'
+          cache: false
+      - name: Native full qualification
+        env:
+          GOMAXPROCS: '2'
+          GOFLAGS: '-p=2 -mod=readonly'
+          GOTOOLCHAIN: local
+        run: python3 harness/qualification/native.py '${{ matrix.phase }}' source 'proof/${{ matrix.phase }}'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: trace-search-${{ matrix.phase }}
+          path: proof/${{ matrix.phase }}/
+          retention-days: 1
+          compression-level: 9
+          if-no-files-found: error
+  compare:
+    needs: native
+    if: always() && github.repository == 'rudycelekli/agent-beacon' && !github.event.repository.private
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Download native receipts through read-only API
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download '${{ github.run_id }}' --repo '${{ github.repository }}' --dir artifacts
+      - name: Evaluator controls
+        run: |
+          python3 -m unittest discover -s qualification -p 'test_*.py' -v > evaluator-controls.log 2>&1
+          cat evaluator-controls.log
+      - name: Compare exact original outcomes
+        run: python3 qualification/compare_native.py artifacts/trace-search-baseline artifacts/trace-search-fixed comparison.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: trace-search-comparison
+          path: |
+            comparison.json
+            evaluator-controls.log
+          retention-days: 1
+          compression-level: 9
+          if-no-files-found: error
