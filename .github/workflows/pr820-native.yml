@@ -1,5 +1,7 @@
 name: PR820 immutable native qualification
 on:
+  push:
+    branches: [qualification/pr820-native-20261013]
   workflow_dispatch:
 permissions:
   contents: read
