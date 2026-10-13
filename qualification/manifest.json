@@ -1,0 +1,14 @@
+{
+  "repository": "rudycelekli/agent-beacon",
+  "go_version": "go1.26.4",
+  "phases": {
+    "baseline": {
+      "head": "c33ceaa4c3811ed92d8818c655ba216c8aa89ce3",
+      "tree": "b76552d02839b44ac2bd18229581f0e546da1fb8"
+    },
+    "fixed": {
+      "head": "0584e99974d12ac5388849f19601a011afc48594",
+      "tree": "b6aec12561d1f3958be61b20b095c86185430bd1"
+    }
+  }
+}
