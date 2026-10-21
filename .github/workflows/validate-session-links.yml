@@ -1,0 +1,53 @@
+name: Validate native session navigation
+on:
+  push:
+    branches: [validation/beacon-session-links-20261021]
+permissions:
+  contents: read
+jobs:
+  dashboard:
+    if: github.repository == 'rudycelekli/agent-beacon'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 5c613e39a0dbe617b04016085222c8314295dc56
+          persist-credentials: false
+      - name: Verify frozen source
+        run: test "$(git rev-parse HEAD)" = 5c613e39a0dbe617b04016085222c8314295dc56
+      - uses: ./.github/actions/setup-go
+        with:
+          modules: |
+            cli/beacon
+            cli/beacon-hooks
+            pkg/asymptoteobserve
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e/package-lock.json
+      - name: Record runtime versions and exact test inputs
+        run: |
+          git rev-parse HEAD
+          go version
+          node --version
+          npm --version
+          sha256sum cli/beacon/go.mod cli/beacon/go.sum cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e/package-lock.json cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e/tests/session-navigation.spec.ts cli/beacon/internal/endpoint/dashboard/static/app.js
+      - name: Build platform-matched hooks binary
+        working-directory: cli/beacon
+        run: make build-hooks-current
+      - name: Dashboard package and race checks
+        working-directory: cli/beacon
+        run: go test -race ./internal/endpoint/dashboard
+      - name: Install locked browser test dependencies
+        working-directory: cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e
+        run: npm ci
+      - name: Install Chromium
+        working-directory: cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e
+        run: npx playwright install --with-deps chromium
+      - name: Run unchanged native dashboard browser suite
+        working-directory: cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e
+        run: npx playwright test --reporter=line
+      - name: Verify reviewed source and regression remain unchanged
+        run: git diff --exit-code
