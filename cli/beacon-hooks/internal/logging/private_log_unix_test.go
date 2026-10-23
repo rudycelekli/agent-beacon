@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 func assertEndpointPerm(t *testing.T, path string, want os.FileMode) {
@@ -90,6 +92,37 @@ func TestSharedEndpointLogKeepsTheSharedMode(t *testing.T) {
 	logger := NewLoggerForPlatform("agent-thought", "cursor")
 	if err := logger.EndpointEvent("agent.reasoning", "session", "info", "Agent reasoning captured", nil); err != nil {
 		t.Fatal(err)
+	}
+	assertEndpointPerm(t, logPath, 0o666)
+	assertEndpointPerm(t, logPath+".lock", 0o666)
+}
+
+// The hook adapter narrows a shared log's archives on rotation the same way, including ones
+// rotated before the change, and leaves the live file and its lock world-writable so every user's
+// hooks can still append.
+func TestSharedEndpointLogArchivesLoseTheSharedMode(t *testing.T) {
+	isolateHookHome(t)
+	logPath := filepath.Join(t.TempDir(), "beacon-agent", "runtime.jsonl")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{logPath, logPath + ".1"} {
+		if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	line := []byte(`{"message":"` + strings.Repeat("x", 64) + `"}` + "\n")
+	if err := appendEndpointJSONL(logPath, line, 32, defaultEndpointRotateArchives); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(logPath + ".2"); err != nil {
+		t.Fatalf("expected the log to rotate: %v", err)
+	}
+	for _, archive := range []string{logPath + ".1", logPath + ".2"} {
+		assertEndpointPerm(t, archive, asymptoteobserve.SharedRuntimeLogArchiveFileMode)
 	}
 	assertEndpointPerm(t, logPath, 0o666)
 	assertEndpointPerm(t, logPath+".lock", 0o666)

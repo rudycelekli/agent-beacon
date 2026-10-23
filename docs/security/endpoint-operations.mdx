@@ -66,6 +66,8 @@ The system package is designed for Jamf Pro, Fleet, or another macOS MDM. It ins
 
 The active runtime log rotates when the next write would exceed 10 MiB. Beacon keeps up to five numbered local archives next to the active file, preserving the active path as the handoff point for local inspection and customer-managed shippers.
 
+In system mode the active log is mode `0666` in a root-owned `0755` directory, because hooks run as each logged-in user and append to the log the root collector created. Its rotated archives are not appended to and are not the shipper handoff point, so they are narrowed to `0640` owned by the collector: no access for other local accounts, and group read for an administrator's `chgrp` or POSIX ACL grant to a log shipper. Archives an earlier release left world-readable are narrowed by the next rotation, or immediately by `beacon endpoint install` or `beacon endpoint doctor --fix`. A reader without access to an archive, such as an ordinary user running the dashboard or `beacon scan` against the system log, sees the active log without the rotated history behind it. User-mode logs and their archives are `0600` in `0700` directories.
+
 ## Network behavior
 
 Normal endpoint collection uses localhost OTLP receivers and local hook execution. Beacon does not require a hosted account, remote policy fetch, MDM API credentials, or external network connection for normal collection.

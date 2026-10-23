@@ -58,44 +58,62 @@ func TestSystemLogIsNeverPrivate(t *testing.T) {
 	}
 }
 
-func TestTightenPrivateRuntimeLogArchives(t *testing.T) {
+func TestTightenRuntimeLogArchives(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits do not exist on Windows")
 	}
-	home := t.TempDir()
-	setTestHome(t, home)
-	path := filepath.Join(home, "runtime.jsonl")
-	writeWorldWritable := func(name string) {
+	perm := func(name string) os.FileMode {
+		t.Helper()
+		info, err := os.Stat(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode().Perm()
+	}
+	write := func(name string, mode os.FileMode) {
 		t.Helper()
 		if err := os.WriteFile(name, []byte("{}\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Chmod(name, 0o666); err != nil {
+		if err := os.Chmod(name, mode); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeWorldWritable(path + ".1")
-	writeWorldWritable(path + ".2")
-	TightenPrivateRuntimeLogArchives(path, 5)
+
+	home := t.TempDir()
+	setTestHome(t, home)
+	path := filepath.Join(home, "runtime.jsonl")
+	write(path+".1", 0o666)
+	write(path+".2", 0o666)
+	TightenRuntimeLogArchives(path, 5)
 	for _, archive := range []string{path + ".1", path + ".2"} {
-		info, err := os.Stat(archive)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := info.Mode().Perm(); got != PrivateRuntimeLogFileMode {
+		if got := perm(archive); got != PrivateRuntimeLogFileMode {
 			t.Fatalf("%s mode = %o, want %o", archive, got, PrivateRuntimeLogFileMode)
 		}
 	}
 
-	// A shared log's archives are left alone.
+	// A shared log's archives lose what an archive does not need. Nothing appends to one and
+	// duplicate detection reads only the live path, so the world-writable mode the live file
+	// carries for hooks buys an archive nothing.
 	shared := filepath.Join(t.TempDir(), "runtime.jsonl")
-	writeWorldWritable(shared + ".1")
-	TightenPrivateRuntimeLogArchives(shared, 5)
-	info, err := os.Stat(shared + ".1")
-	if err != nil {
-		t.Fatal(err)
+	write(shared+".1", 0o666)
+	TightenRuntimeLogArchives(shared, 5)
+	if got := perm(shared + ".1"); got != SharedRuntimeLogArchiveFileMode {
+		t.Fatalf("shared archive mode = %o, want %o", got, SharedRuntimeLogArchiveFileMode)
 	}
-	if got := info.Mode().Perm(); got != SharedRuntimeLogFileMode {
-		t.Fatalf("a shared archive was changed to %o", got)
+
+	// The live shared log keeps the mode hooks need to append to it.
+	write(shared, 0o666)
+	TightenRuntimeLogArchives(shared, 5)
+	if got := perm(shared); got != SharedRuntimeLogFileMode {
+		t.Fatalf("live shared log mode = %o, want %o", got, SharedRuntimeLogFileMode)
+	}
+
+	// Already narrow enough: never widened back toward the shared mode.
+	narrow := filepath.Join(t.TempDir(), "runtime.jsonl")
+	write(narrow+".1", 0o600)
+	TightenRuntimeLogArchives(narrow, 5)
+	if got := perm(narrow + ".1"); got != 0o600 {
+		t.Fatalf("a 0600 shared archive became %o", got)
 	}
 }

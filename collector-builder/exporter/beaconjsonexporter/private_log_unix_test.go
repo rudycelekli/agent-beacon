@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 func setExporterTestHome(t *testing.T) string {
@@ -73,4 +75,35 @@ func TestUserModeExporterLogIsTightenedAndRotatesPrivately(t *testing.T) {
 	for _, target := range []string{path, path + ".lock", path + ".1", path + ".2"} {
 		assertExporterPerm(t, target, 0o600)
 	}
+}
+
+// The three writers must agree on the shared log's modes, so the exporter narrows a shared log's
+// archives on rotation too, including one an older release rotated world-writable, and leaves the
+// live file and its lock at the mode hooks need.
+func TestSharedExporterLogArchivesLoseTheSharedMode(t *testing.T) {
+	setExporterTestHome(t)
+	path := filepath.Join(t.TempDir(), "beacon-agent", "runtime.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{path, path + ".1"} {
+		if err := os.WriteFile(target, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	line := []byte(`{"message":"` + strings.Repeat("x", 64) + `"}` + "\n")
+	if err := appendJSONL(path, line, 32, defaultRotateArchives); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".2"); err != nil {
+		t.Fatalf("expected the log to rotate: %v", err)
+	}
+	for _, archive := range []string{path + ".1", path + ".2"} {
+		assertExporterPerm(t, archive, asymptoteobserve.SharedRuntimeLogArchiveFileMode)
+	}
+	assertExporterPerm(t, path, 0o666)
+	assertExporterPerm(t, path+".lock", 0o666)
 }

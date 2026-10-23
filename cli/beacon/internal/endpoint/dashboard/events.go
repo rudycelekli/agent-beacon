@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -206,7 +208,7 @@ func streamEventRecords(path string, fn func(EventRecord) error) error {
 func streamRecordSource(source eventSource, fn func(EventRecord) error) error {
 	file, err := os.Open(source.path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if sourceUnavailable(source, err) {
 			return nil
 		}
 		return err
@@ -355,7 +357,7 @@ func sharedSessionIDs(path string) (map[string]bool, error) {
 	for _, source := range eventSources(path) {
 		file, err := os.Open(source.path)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if sourceUnavailable(source, err) {
 				continue
 			}
 			return nil, err
@@ -391,7 +393,7 @@ func sharedSessionIDs(path string) (map[string]bool, error) {
 func collectSessionStateStats(source eventSource, query EventQuery, stats map[string]*sessionStateStats, sessionRecords map[string][]EventRecord, shared map[string]bool) error {
 	file, err := os.Open(source.path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if sourceUnavailable(source, err) {
 			return nil
 		}
 		return err
@@ -602,7 +604,7 @@ func recordBefore(a, b EventRecord) bool {
 func readEventsFromSource(source eventSource, query EventQuery, result *EventResult, limit int) error {
 	file, err := os.Open(source.path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if sourceUnavailable(source, err) {
 			return nil
 		}
 		return err
@@ -665,7 +667,7 @@ func FindEvent(path, id string) (EventRecord, bool, error) {
 	}
 	file, err := os.Open(source.path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if sourceUnavailable(source, err) {
 			return EventRecord{}, false, nil
 		}
 		return EventRecord{}, false, err
@@ -715,6 +717,19 @@ func (s eventSource) lineID(line int) string {
 		return fmt.Sprintf("line-%d", line)
 	}
 	return fmt.Sprintf("archive-%d-line-%d", s.archive, line)
+}
+
+// sourceUnavailable reports whether err from opening source is an absence this read skips rather
+// than an error it reports. A missing file has always been one: rotation removes archives while a
+// page is being built. A rotated archive this process may not read is the other: a shared system
+// log keeps its archives readable only by the collector that rotated them, so a dashboard, scan or
+// doctor run by an ordinary user sees the live log and not the history behind it. The live log
+// itself is never skipped that way -- a permission error on it is a real failure and is reported.
+func sourceUnavailable(source eventSource, err error) bool {
+	if os.IsNotExist(err) {
+		return true
+	}
+	return source.archive > 0 && errors.Is(err, fs.ErrPermission)
 }
 
 func eventSources(path string) []eventSource {

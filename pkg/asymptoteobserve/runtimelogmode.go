@@ -28,6 +28,14 @@ const (
 	PrivateRuntimeLogFileMode os.FileMode = 0o600
 	// PrivateRuntimeLogDirMode is the mode of the log directories a writer creates for a per-user log.
 	PrivateRuntimeLogDirMode os.FileMode = 0o700
+	// SharedRuntimeLogArchiveFileMode is the mode of a shared log's rotated archives. An archive
+	// holds the same prompts, command output and diffs as the live file, but nothing the shared
+	// mode exists for touches one: hooks append to the live path, duplicate detection reads the
+	// live path's tail, and rotation is a rename in the log directory, which only the directory's
+	// owner may do. So an archive needs none of the access the live log hands out -- it keeps read
+	// and write for its owner (the collector that rotated it) and group read, which is where an
+	// administrator's chgrp or POSIX ACL mask for a log shipper lives.
+	SharedRuntimeLogArchiveFileMode os.FileMode = 0o640
 )
 
 // unixSystemLogDir is the system-mode log directory on Linux and macOS. It is never private,
@@ -192,21 +200,43 @@ func settleRuntimeLogFileMode(path, logPath string, created bool, stat func(stri
 	return nil
 }
 
-// TightenPrivateRuntimeLogArchives narrows the rotated archives of a private log (path.1 ..
-// path.archives) the way SettleRuntimeLogFileMode narrows the live file. Archives rotated before
-// logs were private still carry the old shared mode, and they hold the same content as the live
-// file. Best effort, like SettleRuntimeLogFileMode on an existing file.
-func TightenPrivateRuntimeLogArchives(path string, archives int) {
-	if !RuntimeLogIsPrivate(path) {
-		return
-	}
+// TightenRuntimeLogArchives narrows the rotated archives of the log at path (path.1 ..
+// path.archives) to what an archive needs, which is less than the live file needs in both modes.
+// A private log's archives follow SettleRuntimeLogFileMode; a shared log's go to
+// SharedRuntimeLogArchiveFileMode. Archives rotated before either rule existed still carry the old
+// 0666, and they hold the same content as the live file.
+//
+// Only the owner changes an archive, and only toward the narrower mode, so a writer never widens
+// one and never touches a file another account rotated. Best effort, like SettleRuntimeLogFileMode
+// on an existing file: it runs beside a rotation that must not fail over a mode.
+func TightenRuntimeLogArchives(path string, archives int) {
+	private := RuntimeLogIsPrivate(path)
 	for i := 1; i <= archives; i++ {
 		archive := fmt.Sprintf("%s.%d", path, i)
 		info, err := os.Lstat(archive)
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		_ = SettleRuntimeLogFileMode(archive, path, false)
+		if private {
+			_ = SettleRuntimeLogFileMode(archive, path, false)
+			continue
+		}
+		tightenSharedRuntimeLogArchive(archive, info)
+	}
+}
+
+// tightenSharedRuntimeLogArchive drops the bits a shared archive does not need: all access for
+// other accounts, and write for the group. Group read is kept for the same reason
+// PrivateACLRuntimeLogFileMode keeps it -- on Linux the group bits are a POSIX ACL's mask, so
+// clearing them would cancel a grant an administrator made on purpose.
+func tightenSharedRuntimeLogArchive(archive string, info os.FileInfo) {
+	if !ownedByProcess(info) {
+		return
+	}
+	current := info.Mode().Perm()
+	want := current &^ (0o007 | 0o020)
+	if want != current {
+		_ = os.Chmod(archive, want)
 	}
 }
 

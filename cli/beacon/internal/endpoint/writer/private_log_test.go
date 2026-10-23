@@ -8,6 +8,7 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 func privateLogTestEvent(message string) schema.Event {
@@ -117,4 +118,66 @@ func TestUserModeRotatedArchivesArePrivate(t *testing.T) {
 	for _, target := range []string{path, path + ".1", path + ".2"} {
 		assertPerm(t, target, 0o600)
 	}
+}
+
+// A shared log's rotated archives hold the same prompts, command output and diffs as the live
+// file, but nothing the shared mode exists for touches one: hooks append to the live path,
+// duplicate detection reads the live path's tail, and rotation is a rename only the log
+// directory's owner may do. They used to be created 0666 by inheriting the live file's mode on
+// rename, so every local account could read and overwrite the retained history.
+func TestSharedLogArchivesLoseTheSharedMode(t *testing.T) {
+	testenv.RequirePOSIXFileModes(t)
+	testenv.SetHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "beacon-agent", "runtime.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// An archive an older release rotated world-writable, narrowed on the way past.
+	if err := os.WriteFile(path+".1", []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path+".1", 0o666); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{Path: path, UserMode: false, RotateSize: 256}
+	for i := 0; i < 3; i++ {
+		event := privateLogTestEvent(strings.Repeat("x", 100) + string(rune('a'+i)))
+		if _, err := AppendEvent(event, opts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(path + ".2"); err != nil {
+		t.Fatalf("expected the log to rotate at least twice: %v", err)
+	}
+	for _, archive := range []string{path + ".1", path + ".2"} {
+		assertPerm(t, archive, asymptoteobserve.SharedRuntimeLogArchiveFileMode)
+	}
+	// The live log and its lock keep the mode hooks need to append.
+	assertPerm(t, path, 0o666)
+	assertPerm(t, path+".lock", 0o666)
+}
+
+// Install, upgrade and doctor --fix run as root, the one context that can chmod archives an older
+// release left behind, so they do not wait for the next 10 MiB rotation.
+func TestEnsureSystemLogWritableTightensExistingArchives(t *testing.T) {
+	testenv.RequirePOSIXFileModes(t)
+	testenv.SetHome(t, t.TempDir())
+	path := filepath.Join(t.TempDir(), "beacon-agent", "runtime.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{path, path + ".1", path + ".5"} {
+		if err := os.WriteFile(name, []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(name, 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := EnsureSystemLogWritable(path); err != nil {
+		t.Fatal(err)
+	}
+	assertPerm(t, path+".1", asymptoteobserve.SharedRuntimeLogArchiveFileMode)
+	assertPerm(t, path+".5", asymptoteobserve.SharedRuntimeLogArchiveFileMode)
+	assertPerm(t, path, 0o666)
 }

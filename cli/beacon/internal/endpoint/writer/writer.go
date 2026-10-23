@@ -166,10 +166,11 @@ func compactRetainedContent(event *schema.Event) {
 // path is the runtime log itself, not its directory: on Windows the log and its lock are created
 // here, and the files of its family (archives, lock) are reset, so the base name matters.
 //
-// On POSIX this makes the directory 0755 and leaves the 0666 file mode to openRuntimeFile. On
-// Windows it is the step without which a system-mode install produces a healthy collector that
-// records nothing the agent did -- and the step that keeps the grant from being more than hooks
-// need; see secureSystemLog.
+// On POSIX this makes the directory 0755 and leaves the live log's 0666 file mode to
+// openRuntimeFile, while narrowing rotated archives, which nothing appends to and only their owner
+// can chmod. On Windows it is the step without which a system-mode install produces a healthy
+// collector that records nothing the agent did -- and the step that keeps the grant from being
+// more than hooks need; see secureSystemLog.
 //
 // Creates the directory first. Install calls this before anything has written a log there, so on a
 // fresh system-mode install the directory does not exist yet -- and securing a path that is not
@@ -198,6 +199,11 @@ func EnsureSystemLogWritable(path string) error {
 	if err := secureSystemLog(path); err != nil {
 		return fmt.Errorf("secure the log directory %s: %w", dir, err)
 	}
+	// Archives an older release rotated are still world-readable and world-writable. Rotation
+	// narrows the ones it creates, but on a machine whose log is a long way from the next 10 MiB
+	// boundary that is a long wait, and this runs as root on install, upgrade and doctor --fix,
+	// which is the one context that can chmod them. Best effort, like the rotation path.
+	asymptoteobserve.TightenRuntimeLogArchives(path, DefaultRotateArchives)
 	return nil
 }
 
@@ -371,7 +377,7 @@ func rotateIfNeeded(path string, maxSize int64, archives int, nextWriteBytes int
 	if err := os.Rename(path, rotated); err != nil {
 		return err
 	}
-	asymptoteobserve.TightenPrivateRuntimeLogArchives(path, archives)
+	asymptoteobserve.TightenRuntimeLogArchives(path, archives)
 	return nil
 }
 
