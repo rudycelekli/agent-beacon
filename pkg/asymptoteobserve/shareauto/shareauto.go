@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	osuser "os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -113,20 +114,51 @@ func (s *Settings) SetGlobal(state string) {
 	s.Auto.Enabled = state == GlobalOn
 }
 
-// DefaultPath is the user file the CLI reads and writes: BEACON_SHARE_SETTINGS_FILE, or HookPath.
+// AccountHome is the home directory of the account the process runs as, read from the account
+// itself: its passwd entry on Unix, the login token's profile on Windows. os.UserHomeDir answers
+// the same question from $HOME, which is environment, and HookPath cannot use environment. The
+// hook adapter already reads the account this way for the user block on its events. Tests point
+// it elsewhere.
+var AccountHome = func() (string, error) {
+	u, err := osuser.Current()
+	if err != nil {
+		return "", err
+	}
+	return u.HomeDir, nil
+}
+
+// DefaultPath is the user file the CLI reads and writes: BEACON_SHARE_SETTINGS_FILE, or
+// ~/.beacon/endpoint/share.json under $HOME. The CLI runs as the person at the keyboard, so its
+// environment is theirs; HookPath is the stricter form the hooks read, and the CLI reports the
+// difference when the two disagree.
 func DefaultPath() string {
 	if p := strings.TrimSpace(os.Getenv(PathEnv)); p != "" {
 		return p
 	}
-	return HookPath()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".beacon", "endpoint", FileName)
 }
 
 // HookPath is the user file the hooks read: ~/.beacon/endpoint/share.json. It ignores
 // BEACON_SHARE_SETTINGS_FILE, because a hook's environment can come from the repository it runs
-// in, and a repository must never be able to turn auto-share on for itself.
+// in, and a repository must never be able to turn auto-share on for itself. $HOME is that same
+// environment -- a clone that points it into its own checkout would otherwise have the hooks read
+// a settings file the clone ships -- so the home directory comes from AccountHome.
+//
+// It is "" when the account has no home directory to read: a uid with no passwd entry, which a
+// container started with --user for an id its image does not know has. Load reads "" as no
+// settings, so auto-share stays off there rather than falling back to $HOME. `beacon share auto`
+// says so, because a publishing switch that silently never applies is worse than one that does
+// not exist.
 func HookPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	home, err := AccountHome()
+	if err != nil {
+		return ""
+	}
+	if home = strings.TrimSpace(home); home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".beacon", "endpoint", FileName)

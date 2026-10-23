@@ -147,14 +147,17 @@ func init() {
 }
 
 // shareAutoHookMismatch says the hooks will not read path, or "" when they do. The CLI honors
-// BEACON_SHARE_SETTINGS_FILE, but the hooks never read it: their environment can come from a
-// repository.
+// BEACON_SHARE_SETTINGS_FILE and $HOME, but the hooks read neither: their environment can come
+// from a repository, so they locate the file from the account itself.
 func shareAutoHookMismatch(path string) string {
 	hook := shareauto.HookPath()
-	if hook == "" || filepath.Clean(hook) == filepath.Clean(path) {
+	if hook == "" {
+		return "the hooks cannot find your home directory from this account, so they read no settings and auto-share will not apply to hook sessions"
+	}
+	if filepath.Clean(hook) == filepath.Clean(path) {
 		return ""
 	}
-	return fmt.Sprintf("the hooks read %s, not %s (%s), so this setting will not apply to hook sessions", hook, path, shareauto.PathEnv)
+	return fmt.Sprintf("the hooks read %s, not %s (%s or $HOME), so this setting will not apply to hook sessions", hook, path, shareauto.PathEnv)
 }
 
 type shareAutoStatus struct {

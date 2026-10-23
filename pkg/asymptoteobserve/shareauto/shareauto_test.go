@@ -1,6 +1,7 @@
 package shareauto
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -194,4 +195,48 @@ func TestMarkerOffWinsAtItsDirectoryAndTheClosestDecides(t *testing.T) {
 	if d := Resolve(s, sub); d.Enabled || d.Source != "marker" || d.Project != sub {
 		t.Fatalf("child off marker under a parent's entry = %+v", d)
 	}
+}
+
+// The hooks locate the user file from the account, never from their environment: a repository can
+// supply BEACON_SHARE_SETTINGS_FILE and $HOME to a runtime that does not also let it run code.
+func TestHookPathComesFromTheAccountNotTheEnvironment(t *testing.T) {
+	repo := t.TempDir()
+	account := t.TempDir()
+	setAccountHome(t, account, nil)
+	t.Setenv(PathEnv, filepath.Join(repo, ".beacon", "user.json"))
+	t.Setenv("HOME", repo)
+	t.Setenv("USERPROFILE", repo)
+
+	if got, want := HookPath(), filepath.Join(account, ".beacon", "endpoint", FileName); got != want {
+		t.Fatalf("HookPath() = %q, want %q", got, want)
+	}
+	// The CLI runs as the person, so it keeps both; it reports the difference itself.
+	if got, want := DefaultPath(), filepath.Join(repo, ".beacon", "user.json"); got != want {
+		t.Fatalf("DefaultPath() with the override = %q, want %q", got, want)
+	}
+	t.Setenv(PathEnv, "")
+	if got, want := DefaultPath(), filepath.Join(repo, ".beacon", "endpoint", FileName); got != want {
+		t.Fatalf("DefaultPath() from $HOME = %q, want %q", got, want)
+	}
+
+	// An account with no home directory of its own leaves the hooks with no settings at all,
+	// rather than with whatever $HOME names.
+	setAccountHome(t, "", errors.New("user: unknown userid 1000"))
+	if got := HookPath(); got != "" {
+		t.Fatalf("HookPath() without an account home = %q, want %q", got, "")
+	}
+	s, err := Load(HookPath())
+	if err != nil {
+		t.Fatalf("Load(%q): %v", "", err)
+	}
+	if s.anyEnabled() {
+		t.Fatalf("settings read with no account home = %+v, want nothing enabled", s)
+	}
+}
+
+func setAccountHome(t *testing.T, home string, err error) {
+	t.Helper()
+	prev := AccountHome
+	AccountHome = func() (string, error) { return home, err }
+	t.Cleanup(func() { AccountHome = prev })
 }

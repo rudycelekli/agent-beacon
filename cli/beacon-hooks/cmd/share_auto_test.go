@@ -51,16 +51,32 @@ func setShareSettingsPath(t *testing.T, path func() string) {
 	t.Cleanup(func() { logging.ShareSettingsPath = prev })
 }
 
+// setAccountHome stands in for the account's passwd entry, which is where shareauto.HookPath reads
+// the home directory and so the only way to point the hooks at a settings file in a test.
+func setAccountHome(t *testing.T, home string) {
+	t.Helper()
+	prev := shareauto.AccountHome
+	shareauto.AccountHome = func() (string, error) { return home, nil }
+	t.Cleanup(func() { shareauto.AccountHome = prev })
+}
+
 func runClaudeSessionHooks(t *testing.T, sessionID string) {
 	t.Helper()
+	runClaudeSessionHooksIn(t, sessionID, "/work/project")
+}
+
+// runClaudeSessionHooksIn is runClaudeSessionHooks for a session working in dir, for the cases
+// where the working directory is what is under test.
+func runClaudeSessionHooksIn(t *testing.T, sessionID, dir string) {
+	t.Helper()
 	runHookWithInput(t, runSessionStart, map[string]interface{}{
-		"hook_event_name": "SessionStart", "session_id": sessionID, "cwd": "/work/project",
+		"hook_event_name": "SessionStart", "session_id": sessionID, "cwd": dir,
 	})
 	runHookWithInput(t, runPromptSubmit, map[string]interface{}{
-		"hook_event_name": "UserPromptSubmit", "session_id": sessionID, "cwd": "/work/project", "prompt": "hello",
+		"hook_event_name": "UserPromptSubmit", "session_id": sessionID, "cwd": dir, "prompt": "hello",
 	})
 	runHookWithInput(t, runPostTool, map[string]interface{}{
-		"hook_event_name": "PostToolUse", "session_id": sessionID, "cwd": "/work/project",
+		"hook_event_name": "PostToolUse", "session_id": sessionID, "cwd": dir,
 		"tool_name": "Bash", "tool_input": map[string]interface{}{"command": "ls"}, "tool_response": map[string]interface{}{"stdout": "a"},
 	})
 }
@@ -126,6 +142,7 @@ func TestAutoShareIgnoresRepoSuppliedSettingsPath(t *testing.T) {
 	logPath := shareAutoHookEnv(t, nil)
 	setShareSettingsPath(t, shareauto.HookPath)
 	home := t.TempDir()
+	setAccountHome(t, home)
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	override := filepath.Join(t.TempDir(), ".beacon", "user.json")
@@ -137,6 +154,42 @@ func TestAutoShareIgnoresRepoSuppliedSettingsPath(t *testing.T) {
 	runClaudeSessionHooks(t, "sess-a")
 	if n := len(shareRequests(t, logPath)); n != 0 {
 		t.Fatalf("share requests from a repo-supplied settings file = %d", n)
+	}
+}
+
+// $HOME is environment too, so a repository that can set it must not be able to choose the file
+// that turns auto-share on, with the visibility it chooses.
+func TestAutoShareIgnoresRepoSuppliedHome(t *testing.T) {
+	logPath := shareAutoHookEnv(t, nil)
+	setShareSettingsPath(t, shareauto.HookPath)
+	account := t.TempDir()
+	setAccountHome(t, account)
+
+	// A clone ships a user file and points $HOME at the checkout that holds it.
+	repo := t.TempDir()
+	shipped := shareauto.Settings{Auto: shareauto.Auto{Enabled: true, Visibility: "public"}}
+	if err := shareauto.Save(filepath.Join(repo, ".beacon", "endpoint", shareauto.FileName), shipped); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", repo)
+	t.Setenv("USERPROFILE", repo)
+	runClaudeSessionHooksIn(t, "sess-a", repo)
+	if n := len(shareRequests(t, logPath)); n != 0 {
+		t.Fatalf("share requests from a repo-supplied HOME = %d", n)
+	}
+
+	// The same file in the account's own home does apply, so the session above was refused for
+	// where its settings came from rather than for auto-share being off.
+	if err := shareauto.Save(filepath.Join(account, ".beacon", "endpoint", shareauto.FileName), shipped); err != nil {
+		t.Fatal(err)
+	}
+	runClaudeSessionHooksIn(t, "sess-b", repo)
+	requests := shareRequests(t, logPath)
+	if len(requests) != 1 {
+		t.Fatalf("share requests from the account's own settings = %d, want 1", len(requests))
+	}
+	if got := requests[0]["session"].(map[string]interface{})["id"]; got != "sess-b" {
+		t.Fatalf("share request session = %v, want sess-b", got)
 	}
 }
 

@@ -35,6 +35,11 @@ func shareAutoTestEnv(t *testing.T, connected bool, mode string) string {
 	env := newShareEnv(t)
 	path := filepath.Join(env.home, ".beacon", "endpoint", shareauto.FileName)
 	t.Setenv(shareauto.PathEnv, path)
+	// The hooks locate the file from the account rather than from $HOME, so the account's home is
+	// what makes the file the CLI writes and the file the hooks read the same one here.
+	prevHome := shareauto.AccountHome
+	shareauto.AccountHome = func() (string, error) { return env.home, nil }
+	t.Cleanup(func() { shareauto.AccountHome = prevHome })
 	prev := shareAutoCloud
 	shareAutoCloud = func() (bool, string) { return connected, mode }
 	t.Cleanup(func() { shareAutoCloud = prev })
