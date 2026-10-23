@@ -3,6 +3,7 @@ package handoff
 import (
 	"errors"
 	"os"
+	"path/filepath"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
@@ -106,8 +107,16 @@ func (s *hermesSource) Events(session Session) ([]schema.Event, error) {
 		if err != nil {
 			return nil, err
 		}
-		// A zero cursor includes session-total usage, as a first sync would.
-		mapped, _ := hermessession.MapSession(h, messages, &hermessession.Cursor{})
+		// A zero cursor includes session-total usage, as a first sync would, but the id key is the
+		// sweep's: a home that does not own this session's unkeyed ids names its events the same
+		// way here as in the runtime log, so a trace shared from the store and one forwarded from
+		// the log are not two copies of the same events.
+		home := filepath.Dir(store.Path())
+		idKey, err := hermessession.SessionIDKey(hermessession.DefaultStatePath(home), home, h.ID)
+		if err != nil {
+			return nil, err
+		}
+		mapped, _ := hermessession.MapSession(h, messages, &hermessession.Cursor{IDKey: idKey})
 		events := make([]schema.Event, 0, len(mapped))
 		for _, m := range mapped {
 			events = append(events, m.Event)

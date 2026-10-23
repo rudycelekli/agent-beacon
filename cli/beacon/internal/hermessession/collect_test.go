@@ -91,6 +91,118 @@ func TestCollectOnceMapsHermesStateDBAndAdvancesCursor(t *testing.T) {
 	}
 }
 
+// A profile cloned from another starts with a copy of its state.db, so both homes hold the same
+// session id and each store's message ids then count up independently. The second home to sync the
+// session keys its event ids by its home, so the two stores' own message 4 are not one event id
+// carrying two different prompts, while the home that already owns the ids keeps them.
+func TestCollectOnceKeepsClonedProfileEventIDsDistinct(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := filepath.Join(dir, "state")
+	logPath := filepath.Join(dir, "runtime.jsonl")
+
+	homes := map[string]string{"default": filepath.Join(dir, "hermes"), "clone": filepath.Join(dir, "hermes", "profiles", "clone")}
+	prompts := map[string]string{"default": "deploy to production", "clone": "write the unit tests"}
+	ids := map[string]string{}
+	for _, profile := range []string{"default", "clone"} {
+		mkdirAll(t, homes[profile])
+		dbPath := filepath.Join(homes[profile], "state.db")
+		createHermesFixtureDB(t, dbPath)
+		// Both stores hand out id 4 for the message their own session took next.
+		insertHermesMessage(t, dbPath, 4, prompts[profile])
+		summary, err := CollectOnce(CollectOptions{
+			DBPath:    dbPath,
+			StatePath: filepath.Join(stateDir, StateFileName("hermes", homes[profile])),
+			LogPath:   logPath,
+			Write:     true,
+			UserMode:  true,
+		})
+		if err != nil {
+			t.Fatalf("CollectOnce for %s returned error: %v", profile, err)
+		}
+		if summary.EventsEmitted == 0 {
+			t.Fatalf("%s summary = %#v, want events", profile, summary)
+		}
+	}
+
+	for _, event := range readEvents(t, logPath) {
+		if event.Event.Action != "prompt.submitted" || event.Prompt == nil {
+			continue
+		}
+		if owner, ok := ids[event.Event.ID]; ok && owner != event.Prompt.Text {
+			t.Fatalf("event id %s names both %q and %q", event.Event.ID, owner, event.Prompt.Text)
+		}
+		ids[event.Event.ID] = event.Prompt.Text
+	}
+	// Four prompts over the two homes: each home's own prompt, plus each home's copy of the one
+	// they share. Keying covers the keyed home's whole session, so its copy of the shared history
+	// is named separately rather than deduplicating against the owner's.
+	if len(ids) != 4 {
+		t.Fatalf("prompt event ids = %v, want one id per prompt per home", ids)
+	}
+
+	// The home that owns the session keeps the ids it was already emitting; only the other one is
+	// keyed, and its cursor records that so its ids never move again.
+	owner, err := LoadState(filepath.Join(stateDir, StateFileName("hermes", homes["default"])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor := owner.Sessions["hermes-session-1"]; cursor == nil || cursor.IDKey != "" {
+		t.Fatalf("owner cursor = %#v, want the unkeyed ids", cursor)
+	}
+	keyed, err := LoadState(filepath.Join(stateDir, StateFileName("hermes", homes["clone"])))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor := keyed.Sessions["hermes-session-1"]; cursor == nil || cursor.IDKey == "" {
+		t.Fatalf("clone cursor = %#v, want ids keyed by home", cursor)
+	}
+
+	// The share projection asks for the same keys, and answers from the cursors, which record what
+	// the sweeps emitted.
+	for _, profile := range []string{"default", "clone"} {
+		key, err := SessionIDKey(filepath.Join(stateDir, StateFileName("hermes", homes[profile])), homes[profile], "hermes-session-1")
+		if err != nil {
+			t.Fatalf("SessionIDKey for %s returned error: %v", profile, err)
+		}
+		want := keyed.Sessions["hermes-session-1"].IDKey
+		if profile == "default" {
+			want = ""
+		}
+		if key != want {
+			t.Fatalf("SessionIDKey for %s = %q, want %q", profile, key, want)
+		}
+	}
+}
+
+// A single home's event ids are what they were before ids could be keyed by home, so an install
+// that upgrades does not re-emit its history under new ids.
+func TestCollectOnceKeepsASingleHomesEventIDs(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "hermes", "state.db")
+	mkdirAll(t, filepath.Dir(dbPath))
+	createHermesFixtureDB(t, dbPath)
+	logPath := filepath.Join(dir, "runtime.jsonl")
+	if _, err := CollectOnce(CollectOptions{DBPath: dbPath, StatePath: filepath.Join(dir, "state", "hermes.json"), LogPath: logPath, Write: true, UserMode: true}); err != nil {
+		t.Fatalf("CollectOnce returned error: %v", err)
+	}
+	prompt := findAction(t, readEvents(t, logPath), "prompt.submitted")
+	if want := hermesEventID("hermes-session-1:1:prompt.submitted"); prompt.Event.ID != want {
+		t.Fatalf("prompt event id = %s, want the unkeyed %s", prompt.Event.ID, want)
+	}
+}
+
+func insertHermesMessage(t *testing.T, path string, id int64, content string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`INSERT INTO messages (id, session_id, role, content, timestamp, active) VALUES (?, 'hermes-session-1', 'user', ?, 1780632900.0, 1)`, id, content); err != nil {
+		t.Fatalf("insert message %d: %v", id, err)
+	}
+}
+
 // A state.db from an older Hermes lacks columns later releases added, such as cwd and archived.
 // The sweep reads them as empty rather than failing with "no such column".
 func TestCollectOnceReadsAStateDBWithoutLaterColumns(t *testing.T) {

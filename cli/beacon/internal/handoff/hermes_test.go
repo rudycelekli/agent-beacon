@@ -229,6 +229,46 @@ func TestHermesSessionUsageInShares(t *testing.T) {
 	}
 }
 
+// A store this home does not own the event ids of names its events the way the sweep does, so a
+// trace shared from the store and the same session forwarded from the runtime log are one set of
+// events rather than two copies.
+func TestHermesSessionEventIDsFollowTheOwningHome(t *testing.T) {
+	dirs, path := hermesFixture(t)
+	sources := DefaultSources(dirs)
+	session, err := Find(sources, HarnessHermes, "20260924_100000_aaaaaa")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	unowned, err := Events(sources, session)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+
+	// Another home claimed this session id first, as a profile cloned from this one would.
+	home := filepath.Dir(path)
+	statePath := hermessession.DefaultStatePath(home)
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	owners := `{"version":1,"sessions":{"20260924_100000_aaaaaa":"/elsewhere/.hermes"}}`
+	if err := os.WriteFile(filepath.Join(filepath.Dir(statePath), "hermes-event-ids.json"), []byte(owners), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	keyed, err := Events(sources, session)
+	if err != nil {
+		t.Fatalf("Events after another home claimed the session: %v", err)
+	}
+	if len(keyed) != len(unowned) || len(keyed) == 0 {
+		t.Fatalf("events = %d, want the same %d", len(keyed), len(unowned))
+	}
+	for i := range keyed {
+		if keyed[i].Event.ID == unowned[i].Event.ID {
+			t.Fatalf("event %d keeps id %s, want ids keyed by this home", i, keyed[i].Event.ID)
+		}
+	}
+}
+
 func TestHermesSessionGoneFromItsStore(t *testing.T) {
 	dirs, path := hermesFixture(t)
 	sources := DefaultSources(dirs)

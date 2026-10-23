@@ -40,6 +40,11 @@ type Cursor struct {
 	ReasoningTokens  int64                      `json:"reasoning_tokens,omitempty"`
 	CostUSD          float64                    `json:"cost_usd,omitempty"`
 	PendingCalls     map[string]json.RawMessage `json:"pending_calls,omitempty"`
+	// IDKey keys this session's event ids to the home that collected them, for a home that does not
+	// own the session's unkeyed ids. It is empty for the owner, which is almost every home: see
+	// SessionIDKey. Written once, when the sweep first meets the session, so a home's ids never
+	// change under it.
+	IDKey string `json:"id_key,omitempty"`
 }
 
 type State struct {
@@ -207,14 +212,23 @@ func CollectOnce(opts CollectOptions) (summary Summary, err error) {
 	if err != nil {
 		return summary, err
 	}
+	owners, err := loadIDOwners(opts.StatePath)
+	if err != nil {
+		return summary, err
+	}
 	defer func() {
+		// Ownership is saved before the cursors, so a sweep that dies between the two re-reads the
+		// sessions it claimed under the ids it already wrote rather than claiming them again.
+		if claimErr := owners.claim(); claimErr != nil && err == nil {
+			err = claimErr
+		}
 		if saveErr := state.Save(opts.StatePath); saveErr != nil && err == nil {
 			err = fmt.Errorf("save Hermes collector state: %w", saveErr)
 		}
 	}()
 	var errs []error
 	for _, session := range sessions {
-		changed, collectErr := collectSession(store, session, state, opts, &summary)
+		changed, collectErr := collectSession(store, session, state, owners, opts, &summary)
 		if errors.Is(collectErr, writer.ErrBudgetSpent) {
 			// Not a failed session: this one and the rest are left for a later sync, with cursors
 			// that have not moved past anything that was not written.
@@ -239,14 +253,22 @@ func CollectOnce(opts CollectOptions) (summary Summary, err error) {
 	return summary, nil
 }
 
-func collectSession(store *Store, session Session, state *State, opts CollectOptions, summary *Summary) (bool, error) {
+func collectSession(store *Store, session Session, state *State, owners *idOwners, opts CollectOptions, summary *Summary) (bool, error) {
+	home := filepath.Dir(store.Path())
+	_, known := state.Sessions[session.ID]
 	cursor := state.cursor(session.ID)
+	if !known {
+		// The first sweep to meet the session fixes how this home names its events, and nothing
+		// re-derives it afterwards: a home that has already emitted events keeps the ids it used.
+		cursor.IDKey = owners.keyFor(home, session.ID)
+	} else if cursor.IDKey == "" {
+		owners.own(home, session.ID)
+	}
 	messages, err := store.ReadMessages(session.ID, cursor.LastMessageID)
 	if err != nil {
 		return false, err
 	}
 	mapped, pending := MapSession(session, messages, cursor)
-	home := filepath.Dir(store.Path())
 	for i := range mapped {
 		mapped[i].Event.Harness.ConfigPath = home
 		mapped[i].Event.Harness.Profile = Profile(home)
@@ -566,7 +588,8 @@ func (s *Store) LastMessageID(sessionID string) (int64, error) {
 // arguments when a later emit fails and the sweep retries the same messages.
 //
 // cursor is what earlier sweeps collected; a zero Cursor maps the whole session, session-total
-// usage included, as a first sync does.
+// usage included, as a first sync does. Its IDKey names the events, so a caller mapping the whole
+// session has to carry the sweep's key to name them the way the sweep did.
 func MapSession(session Session, messages []Message, cursor *Cursor) ([]MappedEvent, map[string]json.RawMessage) {
 	m := &mapper{session: session, cursor: cursor, calls: map[string]toolCall{}}
 	for id, raw := range cursor.PendingCalls {
@@ -837,8 +860,18 @@ func (m *mapper) toolEvent(timestampMS int64, call toolCall, action, category st
 }
 
 func (m *mapper) append(sourceMessageID int64, suffix string, ev schema.Event) {
-	ev.Event.ID = hermesEventID(fmt.Sprintf("%s:%d:%s", m.session.ID, sourceMessageID, suffix))
+	ev.Event.ID = hermesEventID(m.dedupID(sourceMessageID, suffix))
 	m.out = append(m.out, MappedEvent{SourceMessageID: sourceMessageID, Event: ev})
+}
+
+// dedupID names one event of one session: its source message id and a suffix for the events a
+// single message maps to. The home is part of it only for a home that does not own the session's
+// unkeyed ids, which keeps every other home's ids as they were. See SessionIDKey.
+func (m *mapper) dedupID(sourceMessageID int64, suffix string) string {
+	if m.cursor.IDKey == "" {
+		return fmt.Sprintf("%s:%d:%s", m.session.ID, sourceMessageID, suffix)
+	}
+	return fmt.Sprintf("%s@%s:%d:%s", m.session.ID, m.cursor.IDKey, sourceMessageID, suffix)
 }
 
 func (m *mapper) withGenAI(genAI *schema.GenAIInfo, edit func(*schema.GenAIInfo)) *schema.GenAIInfo {
@@ -1061,6 +1094,136 @@ func sessionCost(session Session) float64 {
 func sha256String(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+// idOwnerVersion is the version of the event-id ownership file this build writes and reads.
+const idOwnerVersion = 1
+
+// idOwnerState records, per Hermes session id, the home whose events for that session keep the
+// unkeyed event ids. Every other home collecting the same session id keys its ids by its own home,
+// so two homes never name different events the same way. See SessionIDKey.
+type idOwnerState struct {
+	Version  int               `json:"version"`
+	Sessions map[string]string `json:"sessions"`
+}
+
+var idOwnerFile = sessionsync.StateFile[idOwnerState]{
+	Name:  "Hermes event id",
+	New:   func() *idOwnerState { return &idOwnerState{Version: idOwnerVersion, Sessions: map[string]string{}} },
+	Valid: func(o *idOwnerState) bool { return o.Version == idOwnerVersion && o.Sessions != nil },
+	Stamp: func(o *idOwnerState) { o.Version = idOwnerVersion },
+}
+
+// idOwnersFileName is the ownership file's name. It sits beside the cursor files, because one state
+// directory holds every home's cursor for one mode and so covers exactly the homes whose events can
+// collide.
+const idOwnersFileName = "hermes-event-ids.json"
+
+// idOwnersPath is the ownership file beside the cursor at statePath, or empty when there is no
+// cursor file to put it beside.
+func idOwnersPath(statePath string) string {
+	if strings.TrimSpace(statePath) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(statePath), idOwnersFileName)
+}
+
+// SessionIDKey is the key a home's event ids for sessionID are derived with: empty for the home that
+// owns the session's unkeyed ids, and the home itself for any other home collecting the same session
+// id, whose events would otherwise be named exactly like the owner's.
+//
+// Two homes hold the same session id when one Hermes profile was cloned from another, so both start
+// from the same state.db. Each store's message ids then count up independently, so once the copies
+// diverge the same (session, message id, suffix) names different events, and downstream code that
+// treats event.id as the event's identity drops or overwrites one home's copy.
+//
+// The home that already owns the ids keeps them, so the common case is unchanged: Hermes session ids
+// are timestamp-based, an ordinary profile shares none, and the first home to sync a session claims
+// it. Only a later home gets keyed ids, and its decision is recorded on its cursor, so no home's ids
+// change twice. A session no home has claimed yet reads as unkeyed, which is what a single home
+// collecting it alone needs.
+//
+// This only reads what the sweeps recorded. A cursor for the session is the record of what the sweep
+// emitted, so its key wins; ownership is consulted only for a session no sweep has collected here.
+// Ownership is claimed by a sweep, which is the only thing that writes events, so asking here never
+// decides which home keeps the unkeyed ids.
+func SessionIDKey(statePath, home, sessionID string) (string, error) {
+	state, err := LoadState(statePath)
+	if err != nil {
+		return "", err
+	}
+	if cursor := state.Sessions[sessionID]; cursor != nil {
+		return cursor.IDKey, nil
+	}
+	owners, err := loadIDOwners(statePath)
+	if err != nil {
+		return "", err
+	}
+	return owners.lookup(home, sessionID), nil
+}
+
+// idOwners is the ownership file a sweep resolves ids with: loaded once, and saved only when the
+// sweep claims a session no home had claimed before.
+type idOwners struct {
+	path    string
+	owners  *idOwnerState
+	claimed bool
+}
+
+func loadIDOwners(statePath string) (*idOwners, error) {
+	path := idOwnersPath(statePath)
+	owners, err := idOwnerFile.Load(path)
+	if err != nil {
+		return nil, fmt.Errorf("read Hermes event id owners %s: %w", path, err)
+	}
+	return &idOwners{path: path, owners: owners}, nil
+}
+
+// keyFor returns home's key for sessionID, claiming the session for home when no home owns it yet.
+// A sweep with no cursor file, as a dry run has, claims nothing and keys nothing.
+func (o *idOwners) keyFor(home, sessionID string) string {
+	o.own(home, sessionID)
+	return o.lookup(home, sessionID)
+}
+
+// lookup returns home's key for sessionID from what the sweeps recorded, without claiming anything.
+// An unowned session keys nothing: no sweep has emitted events for it, so there is nothing to
+// collide with.
+func (o *idOwners) lookup(home, sessionID string) string {
+	if o.path == "" || sessionID == "" {
+		return ""
+	}
+	key := canonicalHome(home)
+	if owner, ok := o.owners.Sessions[sessionID]; !ok || owner == key {
+		return ""
+	}
+	return key
+}
+
+// own records home as the owner of sessionID's unkeyed ids when no home owns it yet. It is for a
+// cursor written before ownership was recorded: that home has already emitted unkeyed ids for the
+// session, so a home meeting the session later must not be able to claim them.
+func (o *idOwners) own(home, sessionID string) {
+	if o.path == "" || sessionID == "" {
+		return
+	}
+	if _, ok := o.owners.Sessions[sessionID]; ok {
+		return
+	}
+	o.owners.Sessions[sessionID] = canonicalHome(home)
+	o.claimed = true
+}
+
+// claim records the sessions this sweep took ownership of. Nothing is written when it claimed none.
+func (o *idOwners) claim() error {
+	if o.path == "" || !o.claimed {
+		return nil
+	}
+	if err := idOwnerFile.Save(o.path, o.owners); err != nil {
+		return fmt.Errorf("save Hermes event id owners %s: %w", o.path, err)
+	}
+	o.claimed = false
+	return nil
 }
 
 var hermesIDNamespace = [16]byte{
