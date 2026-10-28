@@ -109,6 +109,7 @@ var valueOptions = map[string]optionSpec{
 // flagOptions are the value-less options that change what a command does to its operands.
 var flagOptions = map[string]optionSpec{
 	"tee": {short: "a", long: []string{"--append"}},
+	"ln":  {short: "T", long: []string{"--no-target-directory"}},
 }
 
 // parsedOptions are a command's operands, the values of its value options keyed by the short
@@ -197,7 +198,7 @@ func (c Command) commandTargets() []FileEffect {
 		}
 		return effectsOf(opts.operands, OpWrite)
 	case "mv", "git-mv", "cp", "install", "ln":
-		opts := parseOptions(args, valueOptions[name], optionSpec{})
+		opts := parseOptions(args, valueOptions[name], flagOptions[name])
 		// mv's sources stop existing, so they are written too.
 		moves := name == "mv" || name == "git-mv"
 		dest := OpWrite
@@ -237,6 +238,11 @@ func (c Command) commandTargets() []FileEffect {
 				effects[len(effects)-1].Op = OpMoveTo
 			}
 			return effects
+		}
+		// ln TARGET creates ./<basename TARGET> when LINK_NAME is omitted. With -T,
+		// LINK_NAME is required; an unknown source cannot name a destination.
+		if name == "ln" && len(opts.operands) == 1 && opts.operands[0].Known && !opts.flags["T"] && !opts.flags["--no-target-directory"] {
+			return []FileEffect{{Path: path.Base(opts.operands[0].Text), Op: dest}}
 		}
 		if len(opts.operands) >= 2 {
 			return effectsOf(opts.operands[len(opts.operands)-1:], dest)
