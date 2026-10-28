@@ -30,6 +30,7 @@ func TestFileEffects(t *testing.T) {
 		{"ln -s '$literal'", []string{"link $literal"}},
 		{"ln -s \"$target\"", nil},
 		{"ln -sT ../real.txt", nil},
+		{"ln -s ''", nil},
 		{"ln --no-target-directory ../real.txt", nil},
 		{"install -m 0755 -t /usr/local/bin build/tool", []string{"write /usr/local/bin/tool"}},
 		{"install -o root -g wheel -t /etc/app conf.yaml", []string{"write /etc/app/conf.yaml"}},

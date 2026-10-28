@@ -241,7 +241,7 @@ func (c Command) commandTargets() []FileEffect {
 		}
 		// ln TARGET creates ./<basename TARGET> when LINK_NAME is omitted. With -T,
 		// LINK_NAME is required; an unknown source cannot name a destination.
-		if name == "ln" && len(opts.operands) == 1 && opts.operands[0].Known && !opts.flags["T"] && !opts.flags["--no-target-directory"] {
+		if name == "ln" && len(opts.operands) == 1 && opts.operands[0].Known && opts.operands[0].Text != "" && !opts.flags["T"] && !opts.flags["--no-target-directory"] {
 			return []FileEffect{{Path: path.Base(opts.operands[0].Text), Op: dest}}
 		}
 		if len(opts.operands) >= 2 {
