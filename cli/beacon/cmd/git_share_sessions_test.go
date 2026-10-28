@@ -332,6 +332,17 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 // nothing waits on the wall clock.
 func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
 	expire := stubGitHookTime(t, map[string]time.Duration{"open_repository": 100 * time.Millisecond, "share_sessions": 6 * time.Second}, "")
+	// The manual parent below is the clock under test. Its Deadline is absent,
+	// so the upload context would otherwise add a real six-second timer that
+	// can expire during Git traversal on a slow runner, before either upload.
+	// Keep that timer beyond the test process's own deadline; the stuck upload
+	// still expires the manual parent, and the production hook budget is unchanged.
+	prevUploadBudget := gitShareUploadBudget
+	gitShareUploadBudget = time.Hour
+	if deadline, ok := t.Deadline(); ok {
+		gitShareUploadBudget = time.Until(deadline) + time.Minute
+	}
+	t.Cleanup(func() { gitShareUploadBudget = prevUploadBudget })
 	t.Setenv(gitlink.HookStdinEnv, "1")
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t)
